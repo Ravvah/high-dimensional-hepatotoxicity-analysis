@@ -1,0 +1,539 @@
+---
+title: "Analyse de données de la toxicité du paracetamol sur le foie"
+author: "Rabah ACHOUR, Arezki Mohand BRANECI"
+date: '' 
+output:
+  pdf_document: default
+---
+
+# A) Motivation
+**On souhaite étudier l'influence du paracetamol sur la toxicité hépatique à partir d'un jeu de données transcriptomiques sur des rats.**
+
+&nbsp;
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+rm(list=ls())
+library(MultiVarSel)
+library(ggplot2)
+```
+
+# B) Exploration des données 
+
+### 1)  Examination brute des données
+```{r}
+load("liver_data.Rdata")
+ls()
+```
+**On a un objet liver.toxicity. Regardons la structure globale de l'objet**
+
+&nbsp;
+
+```{r}
+summary(liver.toxicity)
+```
+**On a 4 éléments dans l'objet liver.toxicity. Regardons chacun d'eux.**
+
+&nbsp;
+
+**`treatment`**
+```{r}
+table1 = liver.toxicity$treatment
+str(table1)
+table1[1:3, ]
+```
+**La colonne `Treatment.Group` contient la même information que `Dose.Group` $\times$ `Time.Group`, enlevons-la.**
+```{r}
+table1$Treatment.Group <- NULL
+table1[1:3, ]
+```
+
+&nbsp;
+
+**Examinons la répartition des deux facteurs `Dose.Group` et `Time.Group`.**
+```{r}
+table(table1$Dose.Group)
+table(table1$Time.Group)
+table(table1$Dose.Group, table1$Time.Group)
+```
+La distribution des échantillons est parfaitement équilibrée.  
+Chaque niveau de *Dose.Group* (50, 150, 1500, 2000) contient 16 échantillons.  
+Chaque niveau de *Time.Group* (6, 18, 24, 48 heures) contient également 16 échantillons.  
+
+Le tableau croisé montre que pour chaque combinaison dose–temps, il y a exactement 4 échantillons.  
+
+&nbsp;
+
+**`gene`**
+```{r}
+table2 = liver.toxicity$gene
+dim(table2)
+table2[1:3, 1:5]
+```
+
+&nbsp;
+
+**`clinic`**
+```{r}
+table3 = liver.toxicity$clinic
+str(table3)
+table3[1:3, ]
+```
+
+&nbsp;
+
+**`gene.ID`**
+```{r}
+str(liver.toxicity$gene.ID)
+```
+
+&nbsp;
+
+**On a donc 4 dataframes dans l'objet ``liver.toxicity``**
+
+- **gene** : données d’expression génique  
+  $\mathbf{G} \in \mathbb{R}^{64 \times 3116}$  
+  64 échantillons $\times$ 3116 gènes (valeurs numériques).
+
+- **clinic** : variables cliniques  
+  $\mathbf{C} \in \mathbb{R}^{64 \times 10}$  
+  64 échantillons $\times$ 10 mesures cliniques (numériques et entières).
+- **treatment** : groupes de traitement  
+  $\mathbf{T} \in \mathbb{R}^{64 \times 3}$  
+  64 échantillons $\times$ 3 descripteurs (numéro d’animal, dose [numérique], temps [entier]).
+
+- **gene.ID** : identifiants des gènes  
+  $\mathbf{I} \in \mathbb{R}^{3116 \times 2}$  
+  3116 gènes $\times$ 2 champs d’annotation (geneBank, gene.title en facteurs).  
+
+&nbsp;
+
+
+### 2) Valeurs manquantes 
+
+&nbsp;
+
+```{r}
+which(is.na(table1))
+which(is.na(table2))
+which(is.na(table3))
+```
+
+**On n'a pas de valeurs manquantes. Concentrons nous sur les données `gene` et `treatment`**.
+
+&nbsp;
+
+### 3) Visualisation des données de gènes
+
+&nbsp;
+
+Les données d’expression génique sont de haute dimension. Pour une visualisation de la variabilité, on peut utiliser une analyse en composantes principales (ACP).
+
+&nbsp;
+
+```{r}
+pca_samples <- prcomp(table2, scale. = TRUE)
+```
+
+&nbsp;
+
+**Regardons la variance expliquée par chaque composante principale.**
+```{r}
+var_explained <- pca_samples$sdev^2 / sum(pca_samples$sdev^2)
+round(var_explained[1:10], 3)
+```
+**Les deux premières composantes principales expliquent une part significative de la variance totale : PC1 capture 28.1 % et PC2 14.9 %, soit 43 % à elles deux.** 
+**Cela indique que l’expression génique présente une structure non aléatoire.**
+
+&nbsp;
+
+**Projection des échantillons avec coloration et formes par facteurs Dose et Périodicité**
+```{r}
+df_pca <- data.frame(PC1 = pca_samples$x[,1],
+                     PC2 = pca_samples$x[,2],
+                     Dose = factor(table1$Dose.Group),
+                     Time = factor(table1$Time.Group))
+
+ggplot(df_pca, aes(x = PC1, y = PC2, color = Dose, shape = Time)) +
+  geom_point(size = 3) +
+  labs(title = "ACP des échantillons selon dose et temps",
+       x = paste0("PC1 (", round(var_explained[1]*100,1), "%)"),
+       y = paste0("PC2 (", round(var_explained[2]*100,1), "%)")) +
+  theme_minimal()
+```
+
+
+&nbsp;
+
+**On observe une séparation partielle des échantillons selon la dose et la périodicité, suggérant que ces facteurs influencent l’expression génique.**
+**Cette ACP justifie une analyse plus approfondie pour quantifier ces effets.**
+
+&nbsp;
+
+### 4) Réduction de la dimensionnalité
+
+&nbsp;
+
+**Pour alléger les calculs de la selection de variables, on peut réduire la dimensionnalité en sélectionnant les gènes les plus variables.**
+
+```{r}
+gene_importance <- rowSums(pca_samples$rotation[, 1:10]^2)
+k <- 1500
+selected_genes <- order(gene_importance, decreasing = TRUE)[1:k]
+table2_reduced <- table2[, selected_genes]
+dim(table2_reduced)
+```
+&nbsp;
+
+# C) Modélisation linéaire multivariée à deux facteurs
+### 1) Intuition de la modélisation
+
+&nbsp;
+
+Le paracétamol est connu pour provoquer une toxicité hépatique à forte dose.  
+Dans notre jeu de données, nous avons deux facteurs expérimentaux :
+
+- **Dose.Group** : la quantité de paracétamol administrée aux rats.  
+- **Time.Group** : la périodicité du traitement.
+
+Notre hypothèse est que :
+
+- L’expression de certains gènes hépatiques **varie en fonction de la dose** administrée.  
+- L’expression peut aussi **évoluer selon le temps** après exposition, reflétant la dynamique des lésions hépatiques. 
+- Il peut exister une **interaction dose $\times$ temps** : par exemple, une forte dose souvent pourrait induire une réponse transcriptionnelle massive, alors qu’une dose plus faible bien étalée pourrait entraîner une modulation  plus modérée.
+
+Cette intuition justifie l’utilisation, d'un **modèle linéaire multivarié** pour tester :
+
+- l’effet principal de la dose,  
+- l’effet principal de la périodicité,  
+- et leur interaction sur l’expression des 3116 gènes.
+
+**Remarque** : Nous utilisons un modèle multivarié (régression multivariée) plutôt qu’une MANOVA classique, car la matrice de covariance des résidus est de rang inférieur à 64 et n’est donc pas inversible lorsque le nombre de variables (3116 gènes) est très supérieur au nombre d’observations (64). Le modèle linéaire multivarié est la formulation adaptée dans ce cas.
+
+### 2) Construction de la matrice de design $X$
+
+&nbsp;
+
+Pour ajuster un modèle linéaire multivarié, on construit la matrice de design $X \in \mathbb{R}^{64 \times p}$ qui encode les facteurs expérimentaux *Dose.Group*, *Time.Group* et leur interaction.
+
+Le modèle multivarié s’écrit :
+$$
+Y = X\beta + \varepsilon
+$$
+
+où :
+
+- $Y \in \mathbb{R}^{64 \times 3116}$ contient les expressions des 3116 gènes,
+- $X$ contient les colonnes indicatrices (contrastes) associées à la dose, au temps et à l’interaction,
+- $\beta \in \mathbb{R}^{p \times 3116}$ est la matrice des coefficients estimés pour tous les gènes simultanément,
+- $\varepsilon$ est la matrice des résidus.
+
+Dans notre cas, la matrice $X$ contient :
+
+- une colonne d’intercept,
+- trois colonnes pour les contrastes de dose (4 niveaux $\rightarrow$ 3 degrés de liberté),
+- trois colonnes pour les contrastes de temps (4 niveaux $\rightarrow$ 3 degrés de liberté),
+- neuf colonnes pour les interactions dose $\times$ temps (3 $\times$ 3).
+
+Ainsi,
+$$
+p = 1 + 3 + 3 + 9 = 16.
+$$
+
+donc 
+$$
+X \in \mathbb{R}^{64 \times 16}.
+$$
+
+
+&nbsp;
+
+```{r}
+
+table_XY <- data.frame(table1[-1], table2_reduced)
+table_XY[1:3, 1:10]
+```
+
+&nbsp;
+
+**Matrice Y et X**
+
+```{r}
+Y <- as.matrix(table2_reduced)
+Y[1:3, 1:5]
+X <- model.matrix(lm(Y ~ Dose.Group * Time.Group + 0, data = table_XY))
+
+dim(X)
+colnames(X)
+# table_XY$Dose.Group <- factor(table_XY$Dose.Group)
+# table_XY$Time.Group <- factor(table_XY$Time.Group)
+
+Y <- scale(Y)
+Y[1:3, 1:5]
+
+```
+**On a bien les coefficients pour chaque gène (3116) et chaque paramètre du modèle**
+
+&nbsp;
+
+
+### 3) Analyse des résidus du modèle ANOVA
+
+&nbsp;
+
+**Pour vérifier la validité du modèle ANOVA, examinons les résidus et leurs propriétés**
+
+- 1) **Hypothèse d'absence d'autocorrélation** : Les résidus doivent être indépendants entre eux.
+
+&nbsp;
+
+
+
+&nbsp;
+
+```{r}
+# residus = fit$residuals
+residus = lm(as.matrix(Y) ~ X - 1)$residuals
+dim(residus)
+pvalue = whitening_test(residus)
+print(pvalue)
+dim(cov(residus))
+
+```
+**Il existe plusieurs façons de modéliser la dépendance entre les résidus. Ces approches se distinguent par la manière dont elles estiment la matrice de covariance des erreurs :**
+
+- **Modèle ARMA** : suppose que les résidus suivent un processus autorégressif à moyenne mobile (structure paramétrique flexible mais imposée).
+- **Modèle AR(1)** : cas particulier du modèle autorégressif où chaque résidu dépend uniquement du précédent (structure très simple et entièrement paramétrique).
+- **Modèle non paramétrique** : aucune contrainte paramétrique n'est imposée ; la matrice de covariance est estimée directement et peut capturer des dépendances plus complexes
+
+```{r}
+res_choice <- whitening_choice(residus, typeDeps = c("AR1", "nonparam", "ARMA"), pAR = 1, qMA = 1)
+```
+
+```{r}
+res_choice
+print(res_choice$Pvalue)
+```
+
+```{r}
+# Whitening AR(1)
+sqrt_inv_sigma_AR1 <- whitening(residus, "AR1", pAR = 1, qMA = 0)
+
+# Whitening Toeplitz Non-paramétrique
+sqrt_inv_sigma_nonparam <- whitening(residus, "nonparam", pAR = 1, qMA = 0)
+
+# Résidus blanchis avec Toeplitz non-param
+residus_nonparam <- residus %*% as.matrix(sqrt_inv_sigma_nonparam)
+
+# Résidus blanchis AR(1)
+residus_AR1 <- residus %*% as.matrix(sqrt_inv_sigma_AR1)
+
+pvalue_non_param = whitening_test(residus_nonparam)
+print(pvalue_non_param)
+
+pvalue_AR1 = whitening_test(residus_AR1)
+print(pvalue_AR1)
+```
+
+**On va procéder par une estimation de la matrice de covariance par blocs.**
+
+&nbsp;
+
+
+# library("BlockCov")
+# res_block <- Sigma_estimation(
+#   E = residus,
+#   k = NULL,         # détection auto du faible rang
+#   nb_nn0 = NULL,    # détection auto de la sparsité
+#   big = FALSE,
+#   reorder = TRUE,   # pour afficher les blocs
+#   inv_12 = TRUE     # calcule Sigma^{-1/2}
+# )
+# square_root_inv_hat_Sigma = res_block$S_inv_12
+
+
+&nbsp;
+
+```{r}
+#save the results
+#save(res_block, file = "res_block_liver_toxicity.Rdata")
+#save(square_root_inv_hat_Sigma, file = "square_root_inv_hat_Sigma_liver_toxicity.Rdata")
+``` 
+
+```{r}
+# load the square root inverse covariance matrix
+# load("square_root_inv_hat_Sigma_liver_toxicity.Rdata")
+```
+
+```{r}
+# dim(square_root_inv_hat_Sigma)
+```
+
+&nbsp;
+
+***Le calcul de la matrice de covariance par blocs est trés coûteux en temps de calcul.***
+**On voit bien que'elle approxime la matrice $\sigma\Id$**
+
+&nbsp;
+
+```{r, fig.show='hold'}
+x11()
+image(cor(residus), main = "Matrice de corrélation des résidus bruts")
+```
+
+```{r, fig.show='hold'}
+x11()
+cor_residus_blanchis = cor(residus %*% as.matrix(sqrt_inv_sigma_nonparam))
+image(cor_residus_blanchis, main = "Matrice de corrélation des résidus blanchis avec Toeplitz non-paramétrique")
+``` 
+
+&nbsp;
+
+Après estimation de $Σ$ par la méthode d'estimation par covariance par blocs et application de $Σ^{-1/2}$ aux résidus, 
+la structure de corrélation est nettement atténuée : les blocs de corrélations fortes 
+observés dans les résidus bruts disparaissent en grande partie, 
+la matrice devient plus homogène et proche d’un bruit blanc multivarié.
+
+Visuellement, le blanchiment ne conduit pas à une matrice parfaitement diagonale, 
+ce qui est normal en très grande dimension (n << q).
+L’objectif du blanchiment est d’éliminer la structure corrélée globale, 
+pas de rendre la matrice strictement diagonale.
+
+&nbsp;
+
+**La p-valeur du modèle de Toeplitz non-paramétrique est la plus élevée, confirmant notre conjecture visuelle.**
+**On va donc utiliser cette méthode de blanchiment pour la sélection de variables.**
+
+&nbsp;
+
+```{r}
+# square_root_inv_hat_Sigma <- as.matrix(sqrt_inv_sigma_nonparam)
+```
+
+### 4) Sélection de variables
+
+&nbsp;
+
+```{r}
+require(doMC) 
+registerDoMC(cores = 2)
+Freqs = variable_selection(Y, X, sqrt_inv_sigma_nonparam, nb_repli = 2, parallel = TRUE, nb.cores = 2)
+save(Freqs, file = 'Freqs_liver_toxicity_TOEPLITZ_nbreplis_2.Rdata')
+# load('Freqs_liver_toxicity_TOEPLITZ_nbreplis_5000.Rdata')
+```
+
+```{r}
+colnames(Freqs) <- c('Names_of_Y', 'Names_of_X', 'frequency')
+```
+
+```{r}
+x11()
+plot(sort(Freqs$frequency, decreasing = T), type = 's', 
+     main = "Fréquence de sélection des variables",
+     xlab = "Variables (triées par fréquence)", ylab = "Fréquence de sélection")
+sort(Freqs$frequency,decreasing = T)[1:50]
+
+```
+
+&nbsp;
+
+```{r}
+seuil=0.95
+
+Freqs$Names_of_X <- gsub("Dose.Group", "Dose", Freqs$Names_of_X)
+Freqs$Names_of_X <- gsub("Time.Group", "Time", Freqs$Names_of_X)
+Freqs$Names_of_X <- gsub(":", " * ", Freqs$Names_of_X) 
+
+indices <- which(Freqs$frequency >= seuil)
+Freqs_sel <- Freqs[indices, ]
+
+```
+
+```{r}
+selected_genes <- unique(Freqs[indices, ]$Names_of_Y)
+
+table_red <- as.data.frame(Y[, selected_genes])
+
+# convertir Dose en facteur (TRÈS important)
+table_red$Dose = factor(table_XY$Dose.Group)
+table_red$Time = factor(table_XY$Time.Group)
+
+library(reshape2)
+table_long <- melt(table_red, id.vars = c("Dose", "Time"))
+
+library(ggplot2)
+
+ggplot(table_long, aes(x = Dose, y = value, fill = Dose)) +
+    geom_boxplot() +
+    facet_wrap(~variable, scales = "free_y", ncol = 3) +
+    theme_bw() +
+    theme(
+        axis.text.x = element_text(size=12, angle=45, hjust=1),
+        axis.text.y = element_text(size=12),
+        strip.text = element_text(size=14, face="bold"),
+        legend.position = "none"
+    ) +
+    ylab("Expression normalisée") +
+    xlab("Dose") +
+    ggtitle("Boxplots des gènes sélectionnés (≥ seuil)")
+
+library(dplyr)
+
+gene_list <- unique(table_long$variable)
+
+chunks <- split(gene_list, ceiling(seq_along(gene_list)/12))
+
+for (i in seq_along(chunks)) {
+    g <- ggplot(
+        subset(table_long, variable %in% chunks[[i]]),
+        aes(x = Dose, y = value, fill = Dose)
+    ) +
+        geom_boxplot() +
+        facet_wrap(~variable, scales = "free_y", ncol = 3) +
+        theme_bw() +
+        theme(
+            axis.text.x = element_text(size=12, angle=45, hjust=1),
+            strip.text = element_text(size=14, face="bold")
+        ) +
+        ggtitle(paste("Gènes sélectionnés – Page", i))
+
+    print(g)
+
+    ggsave(paste0("boxplots_page_", i, ".png"), width=12, height=10)
+}
+```
+
+&nbsp;
+
+```{r}
+x11()
+# 1. Liste des gènes sélectionnés
+liste_genes_selected <- unique(Freqs[indices, ]$Names_of_Y)
+length(liste_genes_selected)
+
+# 2. Extraction des résidus des gènes sélectionnés
+residus_red <- residus[, colnames(residus) %in% liste_genes_selected]
+dim(residus_red)
+
+# 3. Clustering
+hc <- hclust(dist(1 - abs(cor(residus_red))))
+plot(hc)
+rect.hclust(hc, k = 5)
+
+##save the plot as png
+dev.copy(png, "Dendrogram_selected_genes.png", width = 800, height = 600)
+dev.off()
+```
+
+```{r}
+dim(Y)
+sqrt_inv_sigma_nonparam <- as.matrix(sqrt_inv_sigma_nonparam)
+storage.mode(sqrt_inv_sigma_nonparam) <- "double"
+object.size(Y %*% sqrt_inv_sigma_nonparam) / 1024^3
+class(sqrt_inv_sigma_nonparam)
+```
+
