@@ -1,6 +1,6 @@
 ---
 title: "Analyse de données de la toxicité du paracetamol sur le foie"
-author: "Rabah ACHOUR, Arezki Mohand BRANECI"
+author: "Rabah ACHOUR, Mohand Arezki BRANECI"
 date: '' 
 output:
   pdf_document: default
@@ -8,9 +8,10 @@ output:
 
 # A) Motivation
 **On souhaite étudier l'influence du paracetamol sur la toxicité hépatique à partir d'un jeu de données transcriptomiques sur des rats.**
+**On dispose de données d'expression génique (3116 gènes) mesurées sur 64 rats exposés à différentes doses de paracetamol et à différents temps après exposition.**
+**L'objectif est d'identifier les gènes dont l'expression est significativement affectéee par la dose de paracetamol, la périodicité du traitement, ou l'interaction entre ces deux facteurs.**
 
 &nbsp;
-
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
@@ -88,7 +89,9 @@ table3[1:3, ]
 
 **`gene.ID`**
 ```{r}
-str(liver.toxicity$gene.ID)
+table4 = liver.toxicity$gene.ID
+str(table4)
+table4[1:3, ]
 ```
 
 &nbsp;
@@ -179,6 +182,7 @@ ggplot(df_pca, aes(x = PC1, y = PC2, color = Dose, shape = Time)) +
 &nbsp;
 
 **Pour alléger les calculs de la selection de variables, on peut réduire la dimensionnalité en sélectionnant les gènes les plus variables.**
+**Le choix de 1500 gènes vient d'un calcul empirique basé sur la RAM disponible (15 Go).**
 
 ```{r}
 gene_importance <- rowSums(pca_samples$rotation[, 1:10]^2)
@@ -210,7 +214,7 @@ Cette intuition justifie l’utilisation, d'un **modèle linéaire multivarié**
 
 - l’effet principal de la dose,  
 - l’effet principal de la périodicité,  
-- et leur interaction sur l’expression des 3116 gènes.
+- et leur interaction sur l’expression des gènes.
 
 **Remarque** : Nous utilisons un modèle multivarié (régression multivariée) plutôt qu’une MANOVA classique, car la matrice de covariance des résidus est de rang inférieur à 64 et n’est donc pas inversible lorsque le nombre de variables (3116 gènes) est très supérieur au nombre d’observations (64). Le modèle linéaire multivarié est la formulation adaptée dans ce cas.
 
@@ -227,9 +231,9 @@ $$
 
 où :
 
-- $Y \in \mathbb{R}^{64 \times 3116}$ contient les expressions des 3116 gènes,
+- $Y \in \mathbb{R}^{64 \times 1500}$ contient les expressions des 1500 gènes,
 - $X$ contient les colonnes indicatrices (contrastes) associées à la dose, au temps et à l’interaction,
-- $\beta \in \mathbb{R}^{p \times 3116}$ est la matrice des coefficients estimés pour tous les gènes simultanément,
+- $\beta \in \mathbb{R}^{p \times 1500}$ est la matrice des coefficients estimés pour tous les gènes simultanément,
 - $\varepsilon$ est la matrice des résidus.
 
 Dans notre cas, la matrice $X$ contient :
@@ -261,7 +265,7 @@ table_XY[1:3, 1:10]
 &nbsp;
 
 **Matrice Y et X**
-
+**Modélisation par un modèle linéaire multivarié avec interaction Dose x Temps**
 ```{r}
 Y <- as.matrix(table2_reduced)
 Y[1:3, 1:5]
@@ -269,14 +273,12 @@ X <- model.matrix(lm(Y ~ Dose.Group * Time.Group + 0, data = table_XY))
 
 dim(X)
 colnames(X)
-# table_XY$Dose.Group <- factor(table_XY$Dose.Group)
-# table_XY$Time.Group <- factor(table_XY$Time.Group)
 
 Y <- scale(Y)
 Y[1:3, 1:5]
 
 ```
-**On a bien les coefficients pour chaque gène (3116) et chaque paramètre du modèle**
+**On a bien les coefficients pour chaque gène (1500) et chaque paramètre du modèle**
 
 &nbsp;
 
@@ -285,12 +287,9 @@ Y[1:3, 1:5]
 
 &nbsp;
 
-**Pour vérifier la validité du modèle ANOVA, examinons les résidus et leurs propriétés**
+**Pour vérifier la validité du modèle multivarié et faire une selection stable de gènes , examinons les résidus et leurs propriétés**
 
-- 1) **Hypothèse d'absence d'autocorrélation** : Les résidus doivent être indépendants entre eux.
-
-&nbsp;
-
+- 1) **Hypothèse d'absence d'autocorrélation** : Les résidus doivent être indépendants entre eux, équivalents à un bruit blanc..
 
 
 &nbsp;
@@ -304,21 +303,37 @@ print(pvalue)
 dim(cov(residus))
 
 ```
+
+&nbsp;
+
+**La p-valeur du test de blanchiment est très faible, elle affiche $0$ car elle est inférieur à $10^{-301}$ donc R l'enregistre comme nulle. Cela indique une extrême corrélation des résidus et que l'hypothèse d'absence d'autocorrélation est rejetée.**
+
+&nbsp;
+
+# D) Modélisation de la dépendance des résidus et sélection de variables
+
+### 4) Modélisation de la dépendance des résidus par estimation de la matrice de covariance $\Sigma$
 **Il existe plusieurs façons de modéliser la dépendance entre les résidus. Ces approches se distinguent par la manière dont elles estiment la matrice de covariance des erreurs :**
 
-- **Modèle ARMA** : suppose que les résidus suivent un processus autorégressif à moyenne mobile (structure paramétrique flexible mais imposée).
 - **Modèle AR(1)** : cas particulier du modèle autorégressif où chaque résidu dépend uniquement du précédent (structure très simple et entièrement paramétrique).
+- **Modèle ARMA** : suppose que les résidus suivent un processus autorégressif à moyenne mobile (structure paramétrique flexible mais imposée).
 - **Modèle non paramétrique** : aucune contrainte paramétrique n'est imposée ; la matrice de covariance est estimée directement et peut capturer des dépendances plus complexes
 
+**On va comparer ces trois approches pour choisir la plus adaptée aux données.**
 ```{r}
 res_choice <- whitening_choice(residus, typeDeps = c("AR1", "nonparam", "ARMA"), pAR = 1, qMA = 1)
-```
-
-```{r}
 res_choice
 print(res_choice$Pvalue)
 ```
 
+&nbsp;
+
+**On observe que la p-valeur la plus élevée est obtenue avec le modèle de Toeplitz non paramétrique, suggérant qu'il capture mieux la structure de dépendance des résidus.**
+**On va donc utiliser cette méthode pour le blanchiment des résidus.**
+
+&nbsp;
+
+**Vérifions la différence des deux p-valeurs entre le modèle AR(1) et le modèle Toeplitz non paramétrique.**
 ```{r}
 # Whitening AR(1)
 sqrt_inv_sigma_AR1 <- whitening(residus, "AR1", pAR = 1, qMA = 0)
@@ -339,201 +354,305 @@ pvalue_AR1 = whitening_test(residus_AR1)
 print(pvalue_AR1)
 ```
 
-**On va procéder par une estimation de la matrice de covariance par blocs.**
+**On voit que la p-valeur du modèle $AR(1)$ est trés faible de l'ordre de $10^-30$, ce qui est trés loin d'une p-valeur acceptable.**
 
 &nbsp;
 
-
-# library("BlockCov")
-# res_block <- Sigma_estimation(
-#   E = residus,
-#   k = NULL,         # détection auto du faible rang
-#   nb_nn0 = NULL,    # détection auto de la sparsité
-#   big = FALSE,
-#   reorder = TRUE,   # pour afficher les blocs
-#   inv_12 = TRUE     # calcule Sigma^{-1/2}
-# )
-# square_root_inv_hat_Sigma = res_block$S_inv_12
-
-
-&nbsp;
-
-```{r}
-#save the results
-#save(res_block, file = "res_block_liver_toxicity.Rdata")
-#save(square_root_inv_hat_Sigma, file = "square_root_inv_hat_Sigma_liver_toxicity.Rdata")
-``` 
-
-```{r}
-# load the square root inverse covariance matrix
-# load("square_root_inv_hat_Sigma_liver_toxicity.Rdata")
-```
-
-```{r}
-# dim(square_root_inv_hat_Sigma)
-```
-
-&nbsp;
-
-***Le calcul de la matrice de covariance par blocs est trés coûteux en temps de calcul.***
-**On voit bien que'elle approxime la matrice $\sigma\Id$**
+### 5) Visualisation de l'effet du blanchiment par la matrice de correlation des résidus
 
 &nbsp;
 
 ```{r, fig.show='hold'}
-x11()
 image(cor(residus), main = "Matrice de corrélation des résidus bruts")
 ```
 
 ```{r, fig.show='hold'}
-x11()
 cor_residus_blanchis = cor(residus %*% as.matrix(sqrt_inv_sigma_nonparam))
 image(cor_residus_blanchis, main = "Matrice de corrélation des résidus blanchis avec Toeplitz non-paramétrique")
 ``` 
+**La matrice de corrélation des résidus bruts montre une structure de dépendance marquée, avec des blocs de corrélations élevées entre certains gènes.**
+**Le blanchiment a atténué cette structure corrélée (moins de blocs foncés de dépendance) pour obtenir des résidus plus proches d'un bruit blanc multivarié.**
 
 &nbsp;
 
-Après estimation de $Σ$ par la méthode d'estimation par covariance par blocs et application de $Σ^{-1/2}$ aux résidus, 
-la structure de corrélation est nettement atténuée : les blocs de corrélations fortes 
-observés dans les résidus bruts disparaissent en grande partie, 
-la matrice devient plus homogène et proche d’un bruit blanc multivarié.
+### 6) Sélection des gènes influencés par les facteurs expérimentaux par la Stability Selection
 
-Visuellement, le blanchiment ne conduit pas à une matrice parfaitement diagonale, 
-ce qui est normal en très grande dimension (n << q).
-L’objectif du blanchiment est d’éliminer la structure corrélée globale, 
-pas de rendre la matrice strictement diagonale.
+**Maintenant que nous avons stabilisé les résidus via le blanchiment, nous pouvons procéder à la sélection des gènes influencés par les facteurs dose, temps et leur interaction.**
+**Nous allons utiliser la Stability Selection, une méthode robuste pour identifier les variables pertinentes dans un contexte de haute dimension.**
+**L'idée est de répéter plusieurs fois le processus de sélection sur des sous-échantillons des données et de calculer la fréquence de sélection de chaque gène apparu dans les couples variable-réponse.**
 
-&nbsp;
-
-**La p-valeur du modèle de Toeplitz non-paramétrique est la plus élevée, confirmant notre conjecture visuelle.**
-**On va donc utiliser cette méthode de blanchiment pour la sélection de variables.**
+**Cette méthode peut-être trés lourde car elle nécessite le calcul de la matrice de Kronecker. Ici...**
 
 &nbsp;
 
 ```{r}
-# square_root_inv_hat_Sigma <- as.matrix(sqrt_inv_sigma_nonparam)
+# require(doMC) 
+# registerDoMC(cores = 2)
+# Freqs = variable_selection(Y, X, sqrt_inv_sigma_nonparam, nb_repli = 100, parallel = TRUE, nb.cores = 3)
+# save(Freqs, file = 'Freqs_liver_toxicity_TOEPLITZ_nbreplis_100.Rdata')
+load('Freqs_liver_toxicity_TOEPLITZ_nbreplis_100.Rdata')
 ```
-
-### 4) Sélection de variables
 
 &nbsp;
 
-```{r}
-require(doMC) 
-registerDoMC(cores = 2)
-Freqs = variable_selection(Y, X, sqrt_inv_sigma_nonparam, nb_repli = 2, parallel = TRUE, nb.cores = 2)
-save(Freqs, file = 'Freqs_liver_toxicity_TOEPLITZ_nbreplis_2.Rdata')
-# load('Freqs_liver_toxicity_TOEPLITZ_nbreplis_5000.Rdata')
-```
-
+**Renommons les colonnes de Freqs pour plus de clarté**
 ```{r}
 colnames(Freqs) <- c('Names_of_Y', 'Names_of_X', 'frequency')
 ```
 
-```{r}
-x11()
+&nbsp;
+
+**Visualisons la fréquence des couples variables-réponse**
+```{r, fig.width=10, fig.height=6}
 plot(sort(Freqs$frequency, decreasing = T), type = 's', 
-     main = "Fréquence de sélection des variables",
-     xlab = "Variables (triées par fréquence)", ylab = "Fréquence de sélection")
+     main = "Fréquence de sélection des couples variables-réponse",
+     xlab = "Couples Variables-Réponse (triées par fréquence)", ylab = "Fréquence de sélection")
 sort(Freqs$frequency,decreasing = T)[1:50]
 
+```
+**
+
+**Pour sélectionner les gènes les plus influencés, vu le contexte de santé médicale, fixons un seuil de fréquence de sélection à 0.93, ce qui signifie que l'on retient les gènes sélectionnés dans au moins 93 % des répétitions.**
+```{r}
+seuil <- 0.93
+indices = which(Freqs$frequency >= seuil)
+length(indices)
+selected_genes <- unique(Freqs[indices, ]$Names_of_Y)
+length(selected_genes)
 ```
 
 &nbsp;
 
+**1146 gènes sont séléctionnés avec ce seuil.**
+
+&nbsp;
+
+# E) Visualisation et interprétation des résultats
+
+**Pour avoir des visuels lisibles, on va regarder les 10 gènes les plus influencés selon chaque effet (dose, temps, interaction) parmi les gènes sélectionnés.**
+**Nous avons besoin de réestimer les coefficients pour ces gènes car le LASSO introduit un biais.**
+
+**Reestimation des coefficients pour les variables sélectionnés**
 ```{r}
-seuil=0.95
+# Étape 1 : construction des vecteurs Yvec et Xvec
+# Yvec <- as.numeric(Y %*% sqrt_inv_sigma_nonparam)
 
-Freqs$Names_of_X <- gsub("Dose.Group", "Dose", Freqs$Names_of_X)
-Freqs$Names_of_X <- gsub("Time.Group", "Time", Freqs$Names_of_X)
-Freqs$Names_of_X <- gsub(":", " * ", Freqs$Names_of_X) 
+# Xvec <- kronecker(t(sqrt_inv_sigma_nonparam), X)
 
-indices <- which(Freqs$frequency >= seuil)
-Freqs_sel <- Freqs[indices, ]
+# # Étape 2 : sélection des colonnes correspondant aux variables retenues
+# Xvec_sel <- Xvec[, indices]
 
+# # Étape 3 : estimation des coefficients (solution des moindres carrés)
+# B_sel_hat <- solve(t(Xvec_sel) %*% Xvec_sel, t(Xvec_sel) %*% Yvec)
+
+# # Étape 4 : stockage dans Freqs
+# p <- ncol(X)
+# q <- ncol(Y)
+# Freqs$estim <- rep(0, p * q)
+# Freqs$estim[indices] <- as.vector(B_sel_hat)
+# Save Freqs with estim
+# save(Freqs, file = 'Freqs_liver_toxicity_TOEPLITZ_nbreplis_100_with_estim.Rdata')
+load('Freqs_liver_toxicity_TOEPLITZ_nbreplis_100_with_estim.Rdata')
 ```
 
+&nbsp;
+
+#### Sélection des 10 gènes les plus influencés selon chaque effet (par les valeurs réestimés)
+
+&nbsp;
+
 ```{r}
-selected_genes <- unique(Freqs[indices, ]$Names_of_Y)
-
-table_red <- as.data.frame(Y[, selected_genes])
-
-# convertir Dose en facteur (TRÈS important)
-table_red$Dose = factor(table_XY$Dose.Group)
-table_red$Time = factor(table_XY$Time.Group)
-
-library(reshape2)
-table_long <- melt(table_red, id.vars = c("Dose", "Time"))
-
-library(ggplot2)
-
-ggplot(table_long, aes(x = Dose, y = value, fill = Dose)) +
-    geom_boxplot() +
-    facet_wrap(~variable, scales = "free_y", ncol = 3) +
-    theme_bw() +
-    theme(
-        axis.text.x = element_text(size=12, angle=45, hjust=1),
-        axis.text.y = element_text(size=12),
-        strip.text = element_text(size=14, face="bold"),
-        legend.position = "none"
-    ) +
-    ylab("Expression normalisée") +
-    xlab("Dose") +
-    ggtitle("Boxplots des gènes sélectionnés (≥ seuil)")
-
 library(dplyr)
 
-gene_list <- unique(table_long$variable)
+# Nettoyage des noms
+Freqs$Names_of_X <- gsub("Dose.Group", "Dose", Freqs$Names_of_X)
+Freqs$Names_of_X <- gsub("Time.Group", "Time", Freqs$Names_of_X)
+Freqs$Names_of_X <- gsub(":", " * ", Freqs$Names_of_X)
+# Freqs$Gene_Names <- table4$gene.title[Freqs$Names_of_Y == table4$geneBank]
 
-chunks <- split(gene_list, ceiling(seq_along(gene_list)/12))
 
-for (i in seq_along(chunks)) {
-    g <- ggplot(
-        subset(table_long, variable %in% chunks[[i]]),
-        aes(x = Dose, y = value, fill = Dose)
+# --- 1) SELECTION des 10 plus influents POUR TIME
+Freqs_time <- Freqs %>% filter(grepl("^Time$", Names_of_X), frequency >= seuil)
+top10_time <- Freqs_time %>% arrange(desc(abs(estim))) %>% head(10)
+
+# --- 2) SELECTION des 10 plus influents POUR DOSE
+Freqs_dose <- Freqs %>% filter(grepl("^Dose$", Names_of_X), frequency >= seuil)
+top10_dose <- Freqs_dose %>% arrange(desc(abs(estim))) %>% head(10)
+
+# --- 3) SELECTION des 10 plus influents POUR DOSE×TIME
+Freqs_inter <- Freqs %>% filter(grepl("Dose \\* Time", Names_of_X), frequency >= seuil)
+top10_inter <- Freqs_inter %>% arrange(desc(abs(estim))) %>% head(10)
+
+top10_time$Effet  <- top10_time$Names_of_X
+top10_dose$Effet  <- top10_dose$Names_of_X
+top10_inter$Effet <- top10_inter$Names_of_X
+
+top10_dose
+top10_time
+top10_inter
+```
+
+&nbsp;
+
+#### Heatmap des effets des facteurs sur 10 gènes parmi les gènes sélectionnés
+
+&nbsp;
+
+```{r}
+library(ggplot2)
+top30 <- rbind(top10_dose, top10_time, top10_inter)
+#i want the names of the genes, not the id, there is the names in table4
+
+
+gr = ggplot(top30, aes(
+    x = Names_of_Y,
+    y = Effet,
+    color = estim
+)) +
+    geom_point(size = 5) +
+    scale_color_gradient2(low = "blue", mid = "grey", high = "red") +
+    theme_bw() +
+    theme(
+        axis.text.x = element_text(angle=90, hjust=1),
+        text = element_text(size=14)
     ) +
+    ggtitle("Top 10 gènes les plus influents par effet")
+
+print(gr)
+#save the plot
+# ggsave("heatmap_effects_selected_genes.png", plot = last_plot())
+```
+
+**On observe que certains gènes sont fortement influencés par le facteur temps**
+
+&nbsp;
+
+#### Boxplots de 10 gènes parmi les gènes sélectionnés
+
+&nbsp;
+
+```{r, fig.width=18, fig.height=20}
+
+library(reshape2)
+library(ggplot2)
+library(dplyr)
+
+# -----------------------------
+# 1) Créer une liste avec les 3 catégories
+# -----------------------------
+top_list <- list(
+    "Time"        = top10_time$Names_of_Y,
+    "Dose"        = top10_dose$Names_of_Y,
+    "Dose * Time" = top10_inter$Names_of_Y
+)
+
+# -----------------------------
+# 2) Boucle pour générer les 3 images
+# -----------------------------
+for (effet in names(top_list)) {
+
+    # Gènes à tracer pour cet effet
+    genes_to_plot <- top_list[[effet]]
+
+    # Construction du tableau réduit
+    table_red <- as.data.frame(Y[, genes_to_plot, drop = FALSE])
+
+    # Ajout des colonnes Dose et Time
+    table_red$Dose <- factor(table_XY$Dose.Group)
+    table_red$Time <- factor(table_XY$Time.Group)
+
+    # Passage au format long
+    table_long <- melt(table_red, id.vars = c("Dose", "Time"))
+
+    # Création du graphique
+    g <- ggplot(table_long, aes(x = Dose, y = value, fill = Dose)) +
         geom_boxplot() +
         facet_wrap(~variable, scales = "free_y", ncol = 3) +
         theme_bw() +
         theme(
             axis.text.x = element_text(size=12, angle=45, hjust=1),
-            strip.text = element_text(size=14, face="bold")
+            axis.text.y = element_text(size=12),
+            strip.text = element_text(size=14, face="bold"),
+            legend.position = "none"
         ) +
-        ggtitle(paste("Gènes sélectionnés – Page", i))
+        ylab("Expression normalisée") +
+        xlab("Dose") +
+        ggtitle(paste("Top 10 gènes les plus influents ", effet))
 
     print(g)
 
-    ggsave(paste0("boxplots_page_", i, ".png"), width=12, height=10)
+    # Sauvegarde de l’image
+    filename <- paste0("Top10_genes_", gsub(" \\* ", "_", effet), ".png")
+    ggsave(filename, plot = g, width = 12, height = 10)
 }
 ```
 
 &nbsp;
 
-```{r}
-x11()
-# 1. Liste des gènes sélectionnés
-liste_genes_selected <- unique(Freqs[indices, ]$Names_of_Y)
+**On voit que les gènes sélectionnés montrent des variations d'expression significatives en fonction des facteurs dose, temps et leur interaction.**
+
+&nbsp;
+
+#### Dendrogramme de 10 gènes parmi les gènes sélectionnés
+
+&nbsp;
+
+```{r }
+liste_genes_selected <- unique(top10_time$Names_of_Y)
 length(liste_genes_selected)
 
-# 2. Extraction des résidus des gènes sélectionnés
 residus_red <- residus[, colnames(residus) %in% liste_genes_selected]
-dim(residus_red)
 
-# 3. Clustering
 hc <- hclust(dist(1 - abs(cor(residus_red))))
-plot(hc)
-rect.hclust(hc, k = 5)
+plot(hc, main = "Dendrogramme des gènes sélectionnés pour l'effet Temps")
+rect.hclust(hc, k = 3)
 
 ##save the plot as png
 dev.copy(png, "Dendrogram_selected_genes.png", width = 800, height = 600)
 dev.off()
+
+plot.new()
+liste_genes_selected <- unique(top10_dose$Names_of_Y)
+length(liste_genes_selected)
+residus_red <- residus[, colnames(residus) %in% liste_genes_selected]
+hc <- hclust(dist(1 - abs(cor(residus_red))))
+plot(hc, main = "Dendrogramme des gènes sélectionnés pour l'effet Dose")
+rect.hclust(hc, k = 3)
+##save the plot as png
+dev.copy(png, "Dendrogram_selected_genes_dose.png", width = 800, height = 600)
+dev.off()
+
+plot.new()
+liste_genes_selected <- unique(top10_inter$Names_of_Y)
+length(liste_genes_selected)
+residus_red <- residus[, colnames(residus) %in% liste_genes_selected]
+hc <- hclust(dist(1 - abs(cor(residus_red))))
+plot(hc, main = "Dendrogramme des gènes sélectionnés pour l'effet Dose x Temps")
+rect.hclust(hc, k = 3)
+##save the plot as png
+dev.copy(png, "Dendrogram_selected_genes_interaction.png", width = 800, height = 600)
+dev.off()
 ```
 
-```{r}
-dim(Y)
-sqrt_inv_sigma_nonparam <- as.matrix(sqrt_inv_sigma_nonparam)
-storage.mode(sqrt_inv_sigma_nonparam) <- "double"
-object.size(Y %*% sqrt_inv_sigma_nonparam) / 1024^3
-class(sqrt_inv_sigma_nonparam)
-```
+&nbsp;
+
+**On observe des clusters de gènes avec des profils d'expression similaires parmi les gènes sélectionnés, ce qui peut indiquer des régulations transcriptionnelles communes en réponse aux facteurs dose et temps.**
+**Cela suggère que ces gènes pourraient être impliqués dans des voies biologiques similaires affectées par le paracétamol.**
+
+# F) Difficultés rencontrées
+
+**La principale difficulté a été la lourdeur computationnelle de la Stability Selection, en particulier le calcul de la matrice de Kronecker.**
+**Pour alléger les calculs, nous avons réduit la dimensionnalité en sélectionnant les 1500 gènes les plus variables.**
+**Le choix du modèle de dépendance des résidus a également été crucial pour obtenir des résidus blanchis satisfaisants.**
+**Dans un premier temps, à cause d'une autre approche de modélisation, nous avions eu des p-valeurs de blanchiments trés faibles pour les 3 familles de modèles, ce qui nous a permit d'explorer la modélisation par les matrices de covariances par blocs.**
+
+&nbsp;
+**NB: Pour la fonction `whitening_choice` de `MultiVarSel`, les p-valeurs affichées peuvent s'afficher ZERO alors qu'elles sont supérieur au seuil enregistreable de R**
+&nbsp;
+
+# G) Conclusion
+
+**Ce projet fut trés formateur et a permis d'appliquer des techniques avancées de modélisation statistique multivariée à un problème réel de toxicité médicamenteuse.**
+**La mise en situation dans un environnement complexe par la contrainte des ressources disponibles a été un défi intéressant à relever.**
+
 
